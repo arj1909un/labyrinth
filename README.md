@@ -3,7 +3,7 @@ The door finally opens and you find yourself looking at another one of Daedalus'
 Flag format: labyrinth{secret}
 
 # Flag:
-`chr0n0s_st4rt3d_t1m3_fr0m_0!`
+`labyrinth{chr0n0s_st4rt3d_t1m3_fr0m_0!}`
 
 # Solve:
 After going through the challenge description and downloading the attached files we notice that one of the files is a .sal extension, this means we would need a logic analyser tool to view this file the one I used was SALAE Logic 2.0. Now after opening up the .sal file and I saw this on my screen.
@@ -54,7 +54,15 @@ that for each transaction 3 bytes are being sent , to understand them we need to
 
 So our final encrypted cipher text that we intercepted is `4b0d83daa4c29be7882623c3beb0ae5feb3ddfdc71bc4bf6ced1c416547a9419` 
 
-You might have noticed that we didn't take the data bytes from the 1st 2 transactions that is because the first two data bytes are a part of the EEPROM’s memory address selection and we figured it out by looking at this block of code:
+You might have noticed that we didn’t take the data bytes from the 1st 2 transactions that is because the first two data bytes are the stored length of the cipher text (0x00 0x20 = 32 bytes) and not a part of the cipher text, and we figured it out by looking at this block of code:
+
+```bash
+byte lenBytes[2] = { (byte)(paddedLen >> 8), (byte)(paddedLen & 0xFF) };
+eepromWriteBlock(eepromAddr, lenBytes, 2);
+eepromWriteBlock(eepromAddr + 2, cipherBuf, paddedLen);
+```
+The first eepromWriteBlock writes the 2 length bytes at address 0 and the second writes the cipher text starting at address 2, so the capture has 34 writes in total: 2 for the length and 32 for the cipher text. Each write goes out through this function, which is also why every transaction has 3 bytes:
+
 ```bash
 void eepromWriteByte(unsigned int addr, byte data) {
     Wire.beginTransmission(EEPROM_I2C_ADDR);
@@ -67,10 +75,10 @@ void eepromWriteByte(unsigned int addr, byte data) {
     delay(EEPROM_PAGE_DELAY_MS);
 }
 ```
-The expression `addr >> 8` extracts the upper eight bits, while `addr & 0xFF` extracts the lower eight bits.
+The expression addr >> 8 extracts the upper eight bits, while addr & 0xFF extracts the lower eight bits.
 
 Next step is to look for the key, for that we will focus on the generateAeskey function:
-```
+```bash
 void generateAesKey() {
   srand(time(0));
   for (int i = 0; i < 16; i++) {
@@ -79,17 +87,19 @@ void generateAesKey() {
 }
 ```
 Firstly in the description it was mentioned that the key is generated using the current time as the seed. After investigating the srand() and time(0) functions I found out that Arduino UNO the model being used in this challenge has no Real Time Clock mind you this is different from a regular clock.
+
 Secondly the srand(seed) function uses the parameter as the number generator's seed.
+
 Thirdly the rand() generates a sequence based on that seed.
 
 All this was just an overview of what all functions were doing but to understand the code we will need to open up the official documentation of these functions i have provided the avr-libc github repo where i found documentation for these functions:
-https://github.com/avrdudes/avr-libc/blob/main/libc/stdlib/random.c
+[read](https://github.com/avrdudes/avr-libc/blob/main/libc/stdlib/random.c) 
 
-After some digging around we found out that time(0) returns 0. this 0 is used as the seed for the srand function lets see how srand() works :
+time(0) returns the current time in Unix epoch format. But due to no etc, the current time is always 0.
 
 <img width="627" height="541" alt="image" src="https://github.com/user-attachments/assets/c2e7b794-288e-4c50-a0b9-0db1a84bc068" />
 
-In this ss we need to focus on the part where x = 0 , this implements the Park–Miller style algorithm used by certain rand() implementations in avr-libc.
+In this screenshot we need to focus on the part where x = 0 , this implements the Park–Miller style algorithm used by certain rand() implementations in avr-libc.
 
 I implemented this code based on the code given by avr-libc in python to get the key:
 ```bash
@@ -112,9 +122,9 @@ for _ in range(16):
 key = bytes(key)
 print("key:", key.hex())
 ```
-so I did nothing fancy I just changed the random logic of our original code to generate the key.
+so I did nothing fancy I implemented air-libc's rand() function in python.
 
-PHEW. finally we have all the missing pieces of the flag and we will run this final script to get the flag:
+PHEW!,  finally we have all the missing pieces of the flag and we will run this final script to get the flag:
 ```bash
 from Crypto.Cipher import AES
 
@@ -150,11 +160,14 @@ I will walkthrough the code explaining all important points.
     byte iv[16];
     memcpy(iv, aesIvSeed, 16);
    ```
-After going through this doc on AESLib I found out that a CBC cipher object has a read-only attribute iv, holding the Initialization Vector (bytes).
+After going through this doc I found out that a CBC cipher object has a read-only attribute iv, holding the Initialization Vector (bytes). This gave me a hint on which mode to use.
 
 Refference Link:
-https://pycryptodome.readthedocs.io/en/latest/src/cipher/classic.html#cbc-mode
+[read](https://pycryptodome.readthedocs.io/en/latest/src/cipher/classic.html#cbc-mode)
 
-After running the above python script we will get the flag.
+After running the above python script I got this output:
 
+`b'chr0n0s_st4rt3d_t1m3_fr0m_0!\x00\x00\x00\x00'`
+
+The output is the flag followed by \x00\x00\x00\x00. These are not part of the flag. AES encrypts in blocks of 16 bytes, so the Arduino code pads our 28 character flag with zeros up to 32 bytes.
 
